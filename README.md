@@ -1,148 +1,269 @@
-# Detector de Gás Natural (Metano) – ESP8266
+# Detector de Gás Natural (Metano) – Arduino Mega + ESP8266
 
-> Projeto acadêmico IBM3119 • Protótipo open‑source para detecção de gás natural (CH₄) com ESP8266
+> Projeto acadêmico IBM3119 • Protótipo open-source para detecção de gás natural (CH₄) usando **Arduino Mega 2560 + ESP8266 + sensor MQ-5**
 
 **Status atual**
-- Sensor MQ (MQ‑4/MQ‑5/MQ‑8) **não disponível no Ibmec** — aguardando compra/emprestado.
-- Enquanto isso, o firmware incluirá **modo simulado** para desenvolvimento e testes.
-- Planejada **impressão 3D** de um **compartimento para pilhas** (baterias) e, depois, gabinete ventilado.
+
+* Sensor MQ-5 **não disponível no Ibmec** – protótipo foi montado com material próprio (uso em casa) e documentação aberta para replicação no laboratório.
+* Arquitetura final:
+
+  * **Arduino Mega 2560** lê o sensor **MQ-5** (analógico + digital) e calcula **Rs/R₀** e “ppm equivalente”.
+  * **ESP8266 (NodeMCU)** lê **temperatura/umidade (DHT11)**, recebe os dados do Mega via **UART** e publica tudo via **MQTT** (broker Mosquitto + dashboard web).
+* Planejada **impressão 3D** de:
+
+  * **compartimento para pilhas**,
+  * gabinete ventilado para o conjunto MQ-5 + eletrônica.
 
 ---
 
 ## 1) Requisitos do Projeto
 
 ### Requisitos funcionais
-- Detectar presença/aumento de **metano (CH₄)** no ambiente.
-- Exibir nível relativo (ou “ppm equivalente” após calibração).
-- Disparar **alerta sonoro e visual** quando ultrapassar um limiar.
-- Enviar leituras via **Wi‑Fi** (MQTT ou HTTP) para monitoramento.
-- Permitir **calibração** (definir/armazenar R₀ e ajustar limiar).
-- Registrar data/hora de calibração e do último alarme.
+
+* Detectar presença/aumento de **metano (CH₄)** e GLP em ambiente interno.
+* Calcular **Rs/R₀** e estimar um **“ppm equivalente”** usando a curva log-log do MQ-5.
+* Medir **temperatura** e **umidade relativa** (DHT11) para considerar influência termo-úmida no sensor.
+* Disparar **alerta lógico** quando:
+
+  * temperatura ≥ **60 °C** (sobreaquecimento),
+  * **ppm** ultrapassar limiar de segurança definido em software.
+* Enviar leituras periódicas via **Wi-Fi (MQTT)** para:
+
+  * broker **Mosquitto**,
+  * dashboard web em **HTML + JavaScript** (MQTT over WebSocket).
+* Registrar no broker / dashboard:
+
+  * data/hora das leituras,
+  * data/hora da **calibração** (R₀ em ar limpo),
+  * histórico de alarmes.
 
 ### Requisitos não funcionais
-- Baixo custo e reprodutibilidade com documentação aberta.
-- Operação contínua com alimentação **5 V**; consumo adequado.
-- Caixa segura, ventilada e de fácil manutenção.
-- **Aviso de segurança:** protótipo acadêmico — **não** substitui detector certificado.
+
+* Baixo custo e reprodutibilidade usando apenas componentes comuns (Mega, ESP8266, MQ-5, DHT11).
+* Comunicação robusta entre Mega e ESP8266 usando **UART com divisor de tensão** (5 V → 3,3 V).
+* Operação contínua com alimentação **5 V** (USB ou pack de pilhas com step-up).
+* Caixa/gabinete com:
+
+  * ventilação adequada para o sensor,
+  * isolamento mecânico das partes energizadas.
+* **Aviso de segurança:** protótipo acadêmico – **não substitui detector comercial certificado**.
 
 ---
 
 ## 2) Especificações (mapeamento dos requisitos)
 
 ### 2.1 Hardware (BOM)
-- **ESP8266** (NodeMCU ou Wemos D1 mini).
-- **Sensor de gás** _(aguardando disponibilidade)_: **MQ‑4** (recomendado para CH₄).  
-  > Alternativas: MQ‑5/MQ‑2. Se usar **MQ‑8**, o projeto passa a detectar **H₂**, não CH₄.
-- **Buzzer** piezo 5 V.
-- **LEDs** (verde, amarelo, vermelho) + resistores 220 Ω.
-- **Fonte 5 V / 1 A** ou **compartimento de pilhas** (ver Seção 4).
-- Protoboard/PCB, jumpers, parafusos/espacadores.
-- **(Opcional)**: Display OLED I²C (SSD1306), **DHT22** (compensação termo‑úmida), **ADS1115** (ADC externo).
 
-### 2.2 Software (firmware)
-- IDE: **Arduino IDE** ou **PlatformIO**.
-- Bibliotecas: `ESP8266WiFi`, `PubSubClient` (MQTT), `ArduinoJson` (payloads),  
-  `Adafruit_SSD1306`/`Adafruit_GFX` (display, opcional).
-- Telemetria: **MQTT** (tópicos sugeridos `devices/ch4/<id>/state`) ou **HTTP REST**.
-- Lógica:
-  - Leitura analógica → **filtro** (média móvel) → cálculo **Rₛ/R₀**.
-  - **Histerese** para o alarme (evita “pisca”). Limite configurável.
-  - **Publicação periódica** (ex.: a cada 5 s) e envio imediato em alarme.
-  - **Calibração**: rotina para definir **R₀** (ar limpo) e salvar em SPIFFS/LittleFS.
-  - **Modo simulado** enquanto o sensor físico não estiver disponível.
+* **Microcontroladores**
 
-### 2.3 Modelos de IA (opcional)
-- Base: detecção por **limiar** usando a curva do sensor.
-- Extensão: regressão leve (log‑polinomial) sobre `log(Rₛ/R₀)` com temperatura/umidade para estimar concentração relativa.
+  * **Arduino Mega 2560**
 
-### 2.4 Sinal utilizado
-- Saída **analógica** do módulo MQ → pino **A0** do ESP8266.  
-  > Atenção ao **range** do A0 (algumas placas aceitam ~3.2 V; outras exigem até 1.0 V). Ajuste com **divisor resistivo** se necessário.
-- Saída **digital** do módulo (trimpot) é opcional; priorizar leitura **analógica**.
+    * Lê o **sensor MQ-5**.
+    * Calcula `Rs`, `Rs/R₀` e `ppm`.
+    * Envia os dados para o ESP8266 via **Serial3 (TX3)**.
+  * **ESP8266 NodeMCU**
+
+    * Lê o **DHT11** (temperatura/umidade).
+    * Recebe os dados do Mega pela **Serial hardware RXD0 (GPIO3)**.
+    * Publica em MQTT para o broker Mosquitto.
+
+* **Sensores**
+
+  * **MQ-5 – sensor de gás combustível**
+
+    * AO → A0 do Mega (leitura analógica).
+    * DO → pino 52 do Mega (detecção digital ajustável via trimpot).
+  * **DHT11 – temperatura e umidade**
+
+    * DATA → D2 do ESP8266.
+
+* **Interface e comunicação**
+
+  * Conexão **TX3 (pino 14 do Mega)** → **RXD0 (GPIO3 do ESP)**
+    
+  * GND comum entre Mega, ESP e MQ-5.
+
+* **Alimentação**
+
+  * Protótipo atual alimentado via **USB** (Mega + ESP).
+  * Fase seguinte: compartimento 3D com **pack de pilhas** + módulo **step-up 5 V**.
+
+* Protoboard, jumpers e, futuramente, PCB simples.
+
+### 2.2 Software – Arduino Mega (firmware MQ-5)
+
+* Ambiente: **Arduino IDE**.
+* Principais pontos:
+
+  * Leitura analógica do MQ-5 com **média de N amostras** para reduzir ruído.
+  * Cálculo da tensão no sensor `Vrs` e da resistência `Rs` usando o divisor real do módulo:
+
+    * `Rs = (Vrs * RL) / (Vc - Vrs)`.
+  * Rotina de **calibração automática de R₀** em ar limpo:
+
+    * sensor mede `Rs` por ~10 s,
+    * assume‐se `Rs(ar)/R₀ ≈ 5` (datasheet) ⇒ `R₀ = Rs(ar)/5`.
+  * Conversão de `Rs/R₀` para **ppm** via curva log–log do MQ-5 (ajuste linear em escala log).
+  * **Filtro exponencial** em `ratio` e `ppm` para suavizar leituras.
+  * Envio periódico via **Serial3** no formato de linha:
+
+    ```text
+    ADC:<valor>;VRS:<V>;RS:<ohms>;RATIO:<x>;PPM:<y>;D0:<0/1>
+    ```
+
+### 2.3 Software – ESP8266 (bridge + MQTT + DHT11)
+
+* Bibliotecas:
+
+  * `ESP8266WiFi` – conexão Wi-Fi.
+  * `PubSubClient` – cliente MQTT.
+  * `DHT` – leitura do DHT11.
+
+* Lógica:
+
+  * Conecta na rede Wi-Fi (`ssid` / `password`).
+  * Conecta ao **broker Mosquitto** (`mqtt_server`, `mqtt_port`).
+  * Usa `Serial.begin(9600)` para receber do Mega pela RXD0.
+  * Faz o **parse** das linhas recebidas do Mega usando `sscanf`.
+  * Lê **temperatura** e **umidade** do DHT11.
+  * Monta payloads JSON e publica periodicamente (ex. a cada 5 s):
+
+    * Tópico `gas/dht`:
+
+      ```json
+      {"temp":27.9,"hum":64.0}
+      ```
+    * Tópico `gas/mq`:
+
+      ```json
+      {
+        "adc":49,
+        "v_rs":0.239,
+        "rs":1006,
+        "ratio":3.988,
+        "ppm":2.8,
+        "d0":1,
+        "temp":27.9,
+        "hum":64.0
+      }
+      ```
+  * Regras de **alarme lógico** usadas no dashboard:
+
+    * temperatura ≥ 60 °C;
+    * ppm acima do limiar configurado (ex.: > 50 ppm equivalente).
+
+### 2.4 Dashboard Web (HTML + JavaScript)
+
+* Página estática (HTML/CSS/JS) acessível via browser no PC ou celular na mesma rede.
+* Usa **MQTT over WebSocket** para se conectar ao Mosquitto (porta 8080).
+* Mostra em tempo real:
+
+  * cards com **temperatura**, **umidade** e **concentração de gás**;
+  * área de **Alarms** (sem alarmes / alerta de gás / alta temperatura);
+  * log de mensagens formatado:
+
+    ```text
+    [22:32:01] temperature: 27.1 °C | humidity: 44.0 % | ppm: 0.8
+    ```
+* Alarmes visuais mudam de cor quando algum limiar é excedido.
 
 ---
 
 ## 3) Disponibilidade no Ibmec
-- Sensor MQ (MQ‑4/MQ‑5/MQ‑8): **não disponível** no momento. Ações:
-  - [ ] Solicitar compra/emprestado.
-  - [ ] Manter “modo simulado” no firmware até a chegada do sensor.
-- Demais itens (ESP8266, LEDs, buzzer, etc.): verificar estoque local antes da montagem.
+
+* Sensores MQ-4/MQ-5/MQ-8: **não disponíveis** no estoque do Ibmec no momento.
+
+  * [ ] Solicitar compra / empréstimo para replicar o protótipo no laboratório.
+* Arduino Mega, ESP8266, DHT11, jumpers e protoboards:
+  verificar disponibilidade local para montagem de um segundo kit.
+* Enquanto o Ibmec não tiver sensor MQ, é possível:
+
+  * usar o firmware atual com **MQ-5 pessoal**,
+  * ou adaptar um **modo simulado** para demonstração em sala.
 
 ---
 
 ## 4) Alimentação e Impressão 3D
 
 ### 4.1 Compartimento de pilhas (para impressão 3D)
-- **Objetivo:** alojar pilhas (ex.: 4×AA NiMH) e prover saída **5 V** via módulo **step‑up** (ex.: MT3608) até o ESP8266.
-- Requisitos de design:
-  - Tampa com trava e furação para cabos.
-  - Espaço para módulo DC‑DC e chave liga/desliga.
-  - Furações para parafuso de fixação em parede.
-- Após escolher/ajustar o modelo, **enviar STL** para impressão: **ibmeclabs@gmail.com**  
-  (geralmente são necessárias 2–3 iterações).
+
+* **Objetivo:** permitir uso autônomo (sem USB) com pack de pilhas e módulo step-up 5 V.
+* Requisitos do modelo:
+
+  * alojar 4×AA ou 2×18650 + módulo **step-up**;
+  * tampa com trava e furo para cabo de alimentação;
+  * espaço para chave liga/desliga;
+  * furos de fixação (parede ou suporte).
+* Arquivos STL serão enviados para **[ibmeclabs@gmail.com](mailto:ibmeclabs@gmail.com)** para impressão
+  (provavelmente 2–3 iterações até caber placa, módulo e fiação).
 
 ### 4.2 Gabinete principal (fase seguinte)
-- Janelas de ventilação superior/lateral (gás sobe).
-- Suporte interno para o módulo MQ, LEDs e buzzer.
-- Furação externa para LEDs e som do buzzer.
+
+* Aberturas de ventilação próximas ao módulo MQ-5 (gás tende a subir).
+* Furação frontal para:
+
+  * LEDs de status (opcional, fase futura),
+  * saída acústica do buzzer (futuro),
+  * passagem de cabo de alimentação.
+* Suporte interno para fixar Mega, ESP e MQ-5 com segurança.
 
 ---
 
-## 5) Montagem
-| Função           | Pino ESP8266 | Observações                      |
-|------------------|--------------|----------------------------------|
-| Sensor MQ – AOUT | **A0**       | Verificar range de tensão        |
-| LED Verde        | **D1 (GPIO5)** | 220 Ω em série                   |
-| LED Amarelo      | **D2 (GPIO4)** | 220 Ω em série                   |
-| LED Vermelho     | **D5 (GPIO14)**| 220 Ω em série                   |
-| Buzzer           | **D6 (GPIO12)**| Com transistor se necessário     |
-| I²C (OLED, opt.) | **D1/D2**     | I²C padrão (SCL/SDA)             |
+## 5) Montagem (versão atual)
 
-> Evitar pinos de boot (ex.: D8/GPIO15) para saídas ativas.
+| Função                | Placa / Pino                             | Observações                              |
+| --------------------- | ---------------------------------------- | ---------------------------------------- |
+| MQ-5 AOUT (analógico) | **Mega – A0**                            | Leitura para cálculo de Rs/R₀/ppm        |
+| MQ-5 DOUT (digital)   | **Mega – 52**                            | Nível alto/baixo conforme trimpot        |
+| UART Mega → ESP       | **Mega TX3 (14)** → **ESP RXD0 (GPIO3)** |                 |
+| DHT11 DATA            | **ESP – D2**                             | Alimentado com 3,3 V                     |
+| GND comum             | Mega ↔ ESP ↔ MQ-5                        | Referência compartilhada                 |
+| Alimentação           | USB 5 V                                  | Em estudos para pack de pilhas + step-up |
+
+> Não usamos TX do ESP para o Mega (comunicação é unidirecional Mega → ESP).
 
 ---
 
-## 6) Firmware – configuração rápida
+## 6) Firmware – passos rápidos
 
-1. Copiar `firmware/` e abrir no Arduino IDE/PlatformIO.
-2. Ajustar `WIFI_SSID`, `WIFI_PASS` e, se usar, `MQTT_BROKER` em `config.h`.
-3. Definir `ALARM_THRESHOLD` e **habilitar `SIMULATED=true`** enquanto não houver sensor.
-4. Gravar na placa e monitorar via serial (115200 bps).
+1. **Mega 2560**
 
-**Calibração (quando o sensor chegar):**
-- Fazer **burn‑in** ≥ 24 h em ar limpo.
-- Rodar rotina de **calibração de R₀** (menu serial ou botão).
-- Confirmar estabilidade de `Rₛ/R₀` e ajustar `ALARM_THRESHOLD`.
+   * Carregar o sketch do MQ-5 (cálculo de Rs/R₀/ppm + envio Serial3).
+   * Abrir Serial Monitor (9600 bps) para conferir calibração e leituras.
+2. **ESP8266**
+
+   * Desconectar fio TX3→RXD0, gravar o sketch do ESP.
+   * Reconectar o fio, abrir Serial Monitor (9600 bps) e conferir:
+
+     * conexão Wi-Fi,
+     * conexão MQTT,
+     * mensagens “Linha do Mega:” e “Publicado MQ:…”.
+3. **Broker Mosquitto**
+
+   * Rodar `mosquitto` (porta 1883) + listener WebSocket (porta 8080).
+   * Testar com:
+     `mosquitto_sub -h <IP> -p 1883 -t "gas/#" -v`.
+4. **Dashboard Web**
+
+   * Abrir o HTML no navegador,
+   * apontar para o IP do broker,
+   * observar gráficos/cards e alarmes em tempo real.
 
 ---
 
 ## 7) Revisão de Literatura (Overleaf – padrão IEEE/SBrT)
-- Tópicos: princípio dos sensores MQ, curvas log‑log, limitações (UR/temperatura), calibração, comparação MQ‑4 × MQ‑5 × MQ‑2, segurança.
-- Template sugerido: `IEEEtran` (conference). Manter `.bib` com referências.
+
+* Princípio de funcionamento dos sensores **MQ-x** (camada de SnO₂ aquecida).
+* Curvas **log(Rs/R₀) × log(ppm)** do MQ-5 para diferentes gases (CH₄, LPG, H₂) e limites.
+* Influência de **temperatura** e **umidade** (referência: artigo “A Simplified Model for Calculating the Dependence of MOS Gas Sensors on Temperature and Humidity”).
+* Métodos de calibração:
+
+  * determinação de R₀ em ar limpo,
+  * ajustes empíricos em ambiente real.
+* Limitações de precisão e tempo de aquecimento (burn-in).
+* Boas práticas de segurança: diferença entre protótipo acadêmico e sensores certificados.
+
 
 ---
 
-## 8) Estrutura do Repositório
 
-```
-/docs/           (esquemas, datasheets, estudos IEEE)
-/hardware/       (BOM, STL do compartimento de pilhas, fotos)
-/firmware/       (código, config.h, modo simulado, instruções)
-/calibration/    (notas de R0, planilhas)
-/test/           (protocolos e resultados)
-/LICENSE
-README.md
-```
-
----
-
-## 9) Roadmap / Tarefas
-
-- [ ] **Definir sensor** (MQ‑4 recomendado) e providenciar aquisição.
-- [ ] Desenhar/ajustar **compartimento 3D para pilhas** e imprimir.
-- [ ] Montagem elétrica (ESP8266 + LEDs + buzzer + alimentação).
-- [ ] Implementar **modo simulado** e telemetria (MQTT/HTTP).
-- [ ] Após chegada do sensor: **burn‑in**, **calibração** e ajuste de limiar.
-- [ ] Documentar testes e resultados no `/docs` e Overleaf.
-
----
